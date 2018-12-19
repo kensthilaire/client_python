@@ -136,21 +136,34 @@ class MetricsHandler(BaseHTTPRequestHandler):
     """HTTP handler that gives metrics from ``REGISTRY``."""
     registry = REGISTRY
 
+    # Necessary for connection persistence (keepalive)
+    protocol_version = 'HTTP/1.1'
+
+    # Add configurable endpoint, with default of None to maintain
+    # existing behavior
+    endpoint = None
+
     def do_GET(self):
-        registry = self.registry
-        params = parse_qs(urlparse(self.path).query)
-        encoder, content_type = choose_encoder(self.headers.get('Accept'))
-        if 'name[]' in params:
-            registry = registry.restricted_registry(params['name[]'])
-        try:
-            output = encoder(registry)
-        except:
-            self.send_error(500, 'error generating metric output')
-            raise
-        self.send_response(200)
-        self.send_header('Content-Type', content_type)
-        self.end_headers()
-        self.wfile.write(output)
+        endpoint = urlparse(self.path).path
+        if self.endpoint is None or endpoint == self.endpoint:
+            registry = self.registry
+            params = parse_qs(urlparse(self.path).query)
+            encoder, content_type = choose_encoder(self.headers.get('Accept'))
+            if 'name[]' in params:
+                registry = registry.restricted_registry(params['name[]'])
+            try:
+                output = encoder(registry)
+            except:
+                self.send_error(500, 'error generating metric output')
+                raise
+            self.send_response(200)
+            self.send_header('Content-Type', content_type)
+            self.send_header("Content-Length", len(output))
+            self.end_headers()
+            self.wfile.write(output)
+        else:
+            # Unknown path, respond with a 404 Not Found
+            self.send_error(404,'File Not Found: %s' % self.path)
 
     def log_message(self, format, *args):
         """Log nothing."""
@@ -167,7 +180,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
         #  object for type().
         cls_name = str(cls.__name__)
         MyMetricsHandler = type(cls_name, (cls, object),
-                                {"registry": registry})
+                                {"registry": registry, "endpoint": endpoint})
         return MyMetricsHandler
 
 
@@ -181,9 +194,9 @@ class _ThreadingSimpleServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
-def start_http_server(port, addr='', registry=REGISTRY):
+def start_http_server(port, addr='', endpoint=None, registry=REGISTRY):
     """Starts an HTTP server for prometheus metrics as a daemon thread"""
-    CustomMetricsHandler = MetricsHandler.factory(registry)
+    CustomMetricsHandler = MetricsHandler.factory(registry, endpoint)
     httpd = _ThreadingSimpleServer((addr, port), CustomMetricsHandler)
     t = threading.Thread(target=httpd.serve_forever)
     t.daemon = True
